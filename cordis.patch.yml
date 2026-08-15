@@ -1,0 +1,9 @@
+# dsh-plug-manager bundle layer.
+#
+# Mounts the plug-manager host plugin (model tools + GitHub discovery + the
+# local JSON API under /plug-mgr/*). The package's browser half (client.js) is
+# picked up automatically by the client-modules scanner from this same entry
+# name because package.json declares dsh.client, so no separate row is needed.
+- insert:
+    - id: plug-manager
+      name: dsh-plug-manager
