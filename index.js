@@ -213,6 +213,59 @@ export function apply(ctx, config) {
       && typeof manifest.dsh.bundle.patch === 'string'
   }
 
+  /** 从任意 GitHub URL 中提取 owner/repo（无法识别时返回 ''）。 */
+  function githubFullNameFromUrl(url) {
+    if (typeof url !== 'string') return ''
+    const m = /github\.com[/:]([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/i.exec(url)
+    if (m === null) return ''
+    return m[1].replace(/\.git$/i, '').replace(/\/+$/, '')
+  }
+
+  /** 从安装源中提取 github:owner/repo（非 github 源返回 ''）。 */
+  function githubFullNameFromSpec(spec) {
+    if (typeof spec !== 'string') return ''
+    const gh = /^github:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:#|$)/.exec(spec)
+    if (gh !== null) return gh[1].replace(/\.git$/i, '')
+    if (/^git\+(https|http|ssh):\/\//i.test(spec)) return githubFullNameFromUrl(spec)
+    return ''
+  }
+
+  /** 把 manifest 的 repository 字段规范化为 https 仓库地址（失败返回 ''）。 */
+  function repoUrlFromManifest(manifest) {
+    if (manifest === null || typeof manifest !== 'object') return ''
+    const repo = manifest.repository
+    let url = ''
+    if (typeof repo === 'string') url = repo
+    else if (repo !== null && typeof repo === 'object' && typeof repo.url === 'string') url = repo.url
+    if (typeof url !== 'string' || url === '') return ''
+    if (/^github:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(url)) url = 'https://github.com/' + url.slice(7)
+    else if (/^git@github\.com:/i.test(url)) url = 'https://github.com/' + url.slice('git@github.com:'.length)
+    else url = url.replace(/^git\+/, '')
+    if (!/^https?:\/\//i.test(url)) return ''
+    return url.replace(/\.git$/i, '').replace(/\/+$/, '')
+  }
+
+  /** 已安装依赖的补充元数据：版本 / 描述 / 许可证 / 主页 / GitHub 链接 / prepare 脚本。 */
+  function depInfo(depManifest, spec) {
+    const info = { version: '', description: '', license: '', homepage: '', repoUrl: '', githubFullName: '', hasPrepare: false }
+    if (depManifest === null || typeof depManifest !== 'object') {
+      info.githubFullName = githubFullNameFromSpec(spec)
+      return info
+    }
+    if (typeof depManifest.version === 'string') info.version = depManifest.version
+    if (typeof depManifest.description === 'string') info.description = depManifest.description.slice(0, 300)
+    const license = depManifest.license
+    if (typeof license === 'string') info.license = license
+    else if (license !== null && typeof license === 'object' && typeof license.type === 'string') info.license = license.type
+    if (typeof depManifest.homepage === 'string') info.homepage = depManifest.homepage
+    info.repoUrl = repoUrlFromManifest(depManifest)
+    info.hasPrepare = depManifest.scripts !== null && typeof depManifest.scripts === 'object' && typeof depManifest.scripts.prepare === 'string'
+    info.githubFullName = githubFullNameFromSpec(spec)
+      || (info.repoUrl !== '' ? githubFullNameFromUrl(info.repoUrl) : '')
+      || githubFullNameFromUrl(info.homepage)
+    return info
+  }
+
   // 出厂组合刻意不挂载任何 web fetch provider（SSRF 立场：模型不应自选抓取
   // 目标，见 dsh-base 的 web 行注释），因此 web.fetch 在默认部署中不可用。
   // 本插件的抓取目标全部是宿主控制的 GitHub 端点（api.github.com /
@@ -508,12 +561,15 @@ export function apply(ctx, config) {
       const dependencies = manifest.dependencies !== null && typeof manifest.dependencies === 'object' ? manifest.dependencies : {}
       const deps = []
       for (const depName of Object.keys(dependencies)) {
-        let isBundle = false
+        const spec = String(dependencies[depName])
+        let depManifest = null
         try {
-          const depManifest = JSON.parse(await fsSvc.readText(await fsSvc.resolve(dir + '/node_modules/' + depName + '/package.json')))
-          isBundle = isBundleManifest(depManifest)
-        } catch { isBundle = false }
-        deps.push({ name: depName, spec: String(dependencies[depName]), isBundle })
+          depManifest = JSON.parse(await fsSvc.readText(await fsSvc.resolve(dir + '/node_modules/' + depName + '/package.json')))
+        } catch { depManifest = null }
+        deps.push(Object.assign(
+          { name: depName, spec, isBundle: depManifest !== null && isBundleManifest(depManifest) },
+          depInfo(depManifest, spec),
+        ))
       }
       profiles.push({
         name: entry.name,

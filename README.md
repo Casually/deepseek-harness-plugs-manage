@@ -36,7 +36,10 @@
   - **GitHub 代理**：直连 GitHub 受限时，可在页面上直接配置代理并测试连通性
     （见下文「代理配置」）。
   - **已安装**：列出 `$DSH_HOME/profiles` 下每个 profile 的 bundle 栈与已安装
-    依赖，并提供「更新 / 移除」操作。
+    依赖，以与「发现」一致的卡片样式展示（版本 / 许可证 / 安装源 / bundle 层
+    徽章）。点卡片打开详情弹窗：除本地信息外，若插件关联 GitHub 仓库，还会
+    展示仓库星标 / topics / README；卡片与弹窗均可一键「GitHub ↗」直达仓库，
+    并提供「更新 / 移除」操作。
 - **Agent 工具**（模型侧入口，执行前按沙箱策略征询审批）
   - `plug_install` — `dsh plugin --profile <name> add <spec>`
     （npm 包名、`github:owner/repo[#ref]`、`git+<url>`、`.tgz` URL 或路径）

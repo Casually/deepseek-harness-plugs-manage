@@ -29,10 +29,11 @@ window.__ModuleLoader__.load({
 			".pm-card{border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:10px;background:var(--dsw-alias-bg-layer-1,#fff);padding:14px;display:flex;flex-direction:column;gap:8px;}",
 			".pm-card-head{display:flex;gap:10px;align-items:center;}",
 			".pm-avatar{width:28px;height:28px;border-radius:50%;background:var(--dsw-alias-bg-layer-2,#f2f2f2);flex:none;}",
+			".pm-avatar.letter{display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;color:var(--dsw-alias-brand-primary,#4a6cf7);}",
 			".pm-name{font-weight:600;color:var(--dsw-alias-brand-primary,#4a6cf7);cursor:pointer;word-break:break-all;}",
 			".pm-desc{color:var(--dsw-alias-label-secondary,#666);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.9em;}",
 			".pm-meta{display:flex;gap:12px;color:var(--dsw-alias-label-secondary,#666);font-size:12px;flex-wrap:wrap;}",
-			".pm-actions{display:flex;gap:8px;margin-top:auto;}",
+			".pm-actions{display:flex;gap:8px;margin-top:auto;flex-wrap:wrap;}",
 			".pm-note{padding:10px 12px;border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f7f7f7);color:var(--dsw-alias-label-secondary,#555);display:flex;flex-direction:column;gap:8px;}",
 			".pm-job{border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:8px;background:var(--dsw-alias-bg-layer-1,#fff);padding:10px 12px;display:flex;flex-direction:column;gap:8px;}",
 			".pm-output{margin:0;background:var(--dsw-alias-bg-layer-2,#f7f7f7);border:1px solid var(--dsw-alias-border-l1,#eee);border-radius:8px;padding:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.5;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-all;}",
@@ -76,8 +77,7 @@ window.__ModuleLoader__.load({
 			".pm-md-table th{background:var(--dsw-alias-bg-layer-1,#fff);}",
 			".pm-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}",
 			".pm-profile-card{border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:10px;background:var(--dsw-alias-bg-layer-1,#fff);padding:14px;display:flex;flex-direction:column;gap:10px;}",
-			".pm-dep{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--dsw-alias-border-l1,#eee);flex-wrap:wrap;}",
-			".pm-spacer{flex:1;}",
+						".pm-spacer{flex:1;}",
 			".pm-muted{color:var(--dsw-alias-label-secondary,#777);font-size:12px;}",
 			".pm-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:var(--dsw-alias-bg-layer-2,#f7f7f7);border:1px solid var(--dsw-alias-border-l1,#eee);border-radius:6px;padding:2px 6px;word-break:break-all;}",
 		].join("\n");
@@ -554,14 +554,15 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function DetailPanel(props) {
+		function useRepoData(fullName) {
 			const [data, setData] = React.useState(null);
 			const [error, setError] = React.useState("");
 			React.useEffect(() => {
+				if (fullName === "") return undefined;
 				let alive = true;
 				setData(null);
 				setError("");
-				rpc("repo", { fullName: props.fullName })
+				rpc("repo", { fullName })
 					.then((r) => {
 						if (!alive) return;
 						if (r && r.ok) setData(r);
@@ -569,8 +570,46 @@ window.__ModuleLoader__.load({
 					})
 					.catch((e) => { if (alive) setError(errMsg(e)); });
 				return () => { alive = false; };
-			}, [props.fullName]);
+			}, [fullName]);
+			return { data, error };
+		}
 
+		function RepoDetailBody(props) {
+			const state = useRepoData(props.fullName);
+			if (state.error !== "") return h("div", { className: "pm-error" }, "加载 GitHub 仓库信息失败：" + state.error);
+			if (state.data === null) return h("div", { className: "pm-muted" }, "正在加载仓库详情…");
+			const data = state.data;
+			return h(React.Fragment, null,
+				h("div", { className: "pm-facts" },
+					h("span", { className: "pm-badge" }, "★ " + data.repo.stars),
+					h("span", { className: "pm-badge" }, "派生 " + data.repo.forks),
+					h("span", { className: "pm-badge" }, "议题 " + data.repo.openIssues),
+					data.repo.license !== "" ? h("span", { className: "pm-badge" }, data.repo.license) : null,
+					data.repo.archived ? h("span", { className: "pm-badge bad" }, "已归档") : null,
+					data.manifest !== null
+						? h("span", { className: "pm-badge" }, (data.manifest.name !== "" ? data.manifest.name : "package") + "@" + data.manifest.version) : null,
+					data.manifest !== null && data.manifest.hasBundle
+						? h("span", { className: "pm-badge good" }, "dsh.bundle ✓")
+						: h("span", { className: "pm-badge bad" }, "无 dsh.bundle（普通依赖）"),
+					data.manifest !== null && data.manifest.hasPrepare
+						? h("span", { className: "pm-badge bad" }, "含 prepare 脚本 — git 安装将从源码构建") : null,
+					data.repo.topics.map((topic) => h("span", { key: topic, className: "pm-badge" }, topic)),
+				),
+				data.repo.homepage !== "" ? h("div", { className: "pm-muted" }, "主页：", data.repo.homepage) : null,
+				props.children !== undefined && props.children !== null ? props.children : null,
+				data.readme.name !== ""
+					? h(React.Fragment, null,
+						h("div", { className: "pm-muted" }, data.readme.name + (data.readme.truncated ? "（已截断）" : "")),
+						h("div", { className: "pm-readme pm-md" }, renderMarkdown(data.readme.text, (src) => {
+							if (/^https?:\/\//i.test(src)) return src;
+							if (/^(data|javascript|vbscript):/i.test(src)) return null;
+							return "https://raw.githubusercontent.com/" + data.repo.fullName + "/" + data.repo.branch + "/" + src.replace(/^\.\//, "");
+						})))
+					: h("div", { className: "pm-muted" }, "未找到 README。"),
+			);
+		}
+
+		function DetailPanel(props) {
 			return h("div", { className: "pm-detail" },
 				h("div", { className: "pm-row" },
 					h("strong", { style: { fontSize: "15px" } }, props.fullName),
@@ -578,36 +617,8 @@ window.__ModuleLoader__.load({
 					h("a", { className: "pm-btn", href: "https://github.com/" + props.fullName, target: "_blank", rel: "noreferrer" }, "GitHub ↗"),
 					h("button", { className: "pm-btn", onClick: props.onClose }, "关闭"),
 				),
-				error !== "" ? h("div", { className: "pm-error" }, error) : null,
-				data === null && error === "" ? h("div", { className: "pm-muted" }, "正在加载仓库详情…") : null,
-				data !== null ? h(React.Fragment, null,
-					h("div", { className: "pm-facts" },
-						h("span", { className: "pm-badge" }, "★ " + data.repo.stars),
-						h("span", { className: "pm-badge" }, "派生 " + data.repo.forks),
-						h("span", { className: "pm-badge" }, "议题 " + data.repo.openIssues),
-						data.repo.license !== "" ? h("span", { className: "pm-badge" }, data.repo.license) : null,
-						data.repo.archived ? h("span", { className: "pm-badge bad" }, "已归档") : null,
-						data.manifest !== null
-							? h("span", { className: "pm-badge" }, (data.manifest.name !== "" ? data.manifest.name : "package") + "@" + data.manifest.version) : null,
-						data.manifest !== null && data.manifest.hasBundle
-							? h("span", { className: "pm-badge good" }, "dsh.bundle ✓")
-							: h("span", { className: "pm-badge bad" }, "无 dsh.bundle（普通依赖）"),
-						data.manifest !== null && data.manifest.hasPrepare
-							? h("span", { className: "pm-badge bad" }, "含 prepare 脚本 — git 安装将从源码构建") : null,
-						data.repo.topics.map((topic) => h("span", { key: topic, className: "pm-badge" }, topic)),
-					),
-					data.repo.homepage !== "" ? h("div", { className: "pm-muted" }, "主页：", data.repo.homepage) : null,
-					h(InstallBox, { env: props.env, defaultProfile: props.defaultProfile, defaultSpec: data.installSpec, onRequested: props.onRequested }),
-					data.readme.name !== ""
-						? h(React.Fragment, null,
-							h("div", { className: "pm-muted" }, data.readme.name + (data.readme.truncated ? "（已截断）" : "")),
-							h("div", { className: "pm-readme pm-md" }, renderMarkdown(data.readme.text, (src) => {
-								if (/^https?:\/\//i.test(src)) return src;
-								if (/^(data|javascript|vbscript):/i.test(src)) return null;
-								return "https://raw.githubusercontent.com/" + data.repo.fullName + "/" + data.repo.branch + "/" + src.replace(/^\.\//, "");
-							})))
-						: h("div", { className: "pm-muted" }, "未找到 README。"),
-				) : null,
+				h(RepoDetailBody, { fullName: props.fullName },
+					h(InstallBox, { env: props.env, defaultProfile: props.defaultProfile, defaultSpec: "github:" + props.fullName, onRequested: props.onRequested })),
 			);
 		}
 
@@ -754,20 +765,99 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function ProfileCard(props) {
-			const p = props.profile;
+		function InstalledCard(props) {
+			const dep = props.dep;
+			const initial = dep.name.replace(/^@/, "").charAt(0).toUpperCase();
+			const local = dep.spec.indexOf("link:") === 0 || dep.spec.indexOf("file:") === 0 || dep.spec.indexOf("/") === 0 || dep.spec.indexOf("~/") === 0;
+			return h("div", { className: "pm-card" },
+				h("div", { className: "pm-card-head" },
+					h("div", { className: "pm-avatar letter" }, initial !== "" ? initial : "?"),
+					h("span", { className: "pm-name", title: "查看详情", onClick: () => props.onOpen(dep.name) }, dep.name),
+				),
+				h("div", { className: "pm-desc" }, dep.description !== "" ? dep.description : "（无描述）"),
+				h("div", { className: "pm-meta" },
+					dep.version !== "" ? h("span", null, "v" + dep.version) : null,
+					h("span", { title: dep.spec }, dep.spec),
+					dep.license !== "" ? h("span", null, dep.license) : null,
+				),
+				h("div", { className: "pm-facts" },
+					dep.isBundle ? h("span", { className: "pm-badge good" }, "dsh.bundle") : h("span", { className: "pm-badge" }, "普通依赖"),
+					local ? h("span", { className: "pm-badge" }, "本地源") : null,
+					dep.hasPrepare ? h("span", { className: "pm-badge bad" }, "含 prepare 脚本") : null,
+				),
+				props.jobId !== null ? h(JobPanel, { jobId: props.jobId, onSettled: props.onSettled }) : null,
+				h("div", { className: "pm-actions" },
+					h("button", { className: "pm-btn", onClick: () => props.onOpen(dep.name) }, "详情"),
+					dep.repoUrl !== "" ? h("a", { className: "pm-btn", href: dep.repoUrl, target: "_blank", rel: "noreferrer" }, dep.repoUrl.indexOf("github.com") >= 0 ? "GitHub ↗" : "仓库 ↗") : null,
+					h("button", { className: "pm-btn", onClick: () => props.onUpdate(dep.name) }, "更新"),
+					h("button", { className: "pm-btn danger", onClick: () => props.onRemove(dep.name) }, "移除"),
+				),
+			);
+		}
+
+		function InstalledDetailPanel(props) {
+			const dep = props.dep;
 			const [jobId, setJobId] = React.useState(null);
 			const [message, setMessage] = React.useState(null);
-			function requestOp(op, packageName) {
+			const ghUrl = dep.repoUrl !== "" ? dep.repoUrl : (dep.githubFullName !== "" ? "https://github.com/" + dep.githubFullName : "");
+			function requestOp(op) {
 				setMessage(null);
-				const args = { op, profile: p.name, packageName };
-				rpc("request", args)
+				rpc("request", { op, profile: props.profileName, packageName: dep.name })
 					.then((r) => {
 						if (r && r.ok) setJobId(r.jobId);
 						else setMessage({ ok: false, text: r && r.error ? r.error : "请求失败" });
 					})
 					.catch((e) => setMessage({ ok: false, text: errMsg(e) }));
 			}
+			return h("div", { className: "pm-detail" },
+				h("div", { className: "pm-row" },
+					h("strong", { style: { fontSize: "15px" } }, dep.name + (dep.version !== "" ? "@" + dep.version : "")),
+					h("span", { className: "pm-spacer" }),
+					ghUrl !== "" ? h("a", { className: "pm-btn", href: ghUrl, target: "_blank", rel: "noreferrer" }, ghUrl.indexOf("github.com") >= 0 ? "GitHub ↗" : "仓库 ↗") : null,
+					h("button", { className: "pm-btn", onClick: props.onClose }, "关闭"),
+				),
+				h("div", { className: "pm-facts" },
+					h("span", { className: "pm-badge" }, "Profile：" + props.profileName),
+					dep.isBundle ? h("span", { className: "pm-badge good" }, "dsh.bundle") : h("span", { className: "pm-badge" }, "普通依赖"),
+					dep.license !== "" ? h("span", { className: "pm-badge" }, dep.license) : null,
+					dep.hasPrepare ? h("span", { className: "pm-badge bad" }, "含 prepare 脚本") : null,
+				),
+				dep.description !== "" ? h("div", { className: "pm-muted" }, dep.description) : null,
+				h("div", { className: "pm-row" },
+					h("span", { className: "pm-muted" }, "安装源："),
+					h("span", { className: "pm-code" }, dep.spec)),
+				dep.homepage !== "" ? h("div", { className: "pm-muted" }, "主页：", dep.homepage) : null,
+				h("div", { className: "pm-note" },
+					h("div", { className: "pm-row" }, h("strong", null, "管理此插件")),
+					jobId !== null
+						? h(JobPanel, { jobId, onSettled: (ok) => { if (ok && props.onRequested) props.onRequested(); } })
+						: h("div", { className: "pm-row" },
+							h("button", { className: "pm-btn primary", onClick: () => requestOp("update") }, "更新"),
+							h("button", { className: "pm-btn danger", onClick: () => requestOp("remove") }, "移除"),
+							h("span", { className: "pm-muted" }, "由插件管理器直接执行 dsh plugin 并实时显示输出，完成后需重启 DSH 生效。")),
+					message !== null ? h("div", { className: message.ok ? "pm-ok" : "pm-error" }, message.text) : null,
+				),
+				dep.githubFullName !== ""
+					? h(RepoDetailBody, { fullName: dep.githubFullName })
+					: h("div", { className: "pm-muted" }, "此插件未关联 GitHub 仓库，无法展示仓库详情与 README。"),
+			);
+		}
+
+		function ProfileCard(props) {
+			const p = props.profile;
+			const [job, setJob] = React.useState(null);
+			const [message, setMessage] = React.useState(null);
+			const [selected, setSelected] = React.useState(null);
+			function requestOp(op, packageName) {
+				setMessage(null);
+				rpc("request", { op, profile: p.name, packageName })
+					.then((r) => {
+						if (r && r.ok) setJob({ id: r.jobId, dep: packageName });
+						else setMessage({ ok: false, text: r && r.error ? r.error : "请求失败" });
+					})
+					.catch((e) => setMessage({ ok: false, text: errMsg(e) }));
+			}
+			const selectedDep = selected === null ? null : p.dependencies.find((d) => d.name === selected);
 			return h("div", { className: "pm-profile-card" },
 				h("div", { className: "pm-row" },
 					h("strong", null, "Profile：" + p.name),
@@ -775,17 +865,23 @@ window.__ModuleLoader__.load({
 					p.dependencies.length > 0 ? h("button", { className: "pm-btn", onClick: () => requestOp("update", "") }, "全部更新") : null,
 				),
 				h("div", { className: "pm-muted" }, "Bundle 栈：" + (p.bundles.length > 0 ? p.bundles.join(" → ") : "（空）")),
-				jobId !== null ? h(JobPanel, { jobId, onSettled: (ok) => { if (ok && props.onRequested) props.onRequested(); } }) : null,
+				job !== null && job.dep === "" ? h(JobPanel, { jobId: job.id, onSettled: (ok) => { if (ok && props.onRequested) props.onRequested(); } }) : null,
 				p.dependencies.length === 0 ? h("div", { className: "pm-muted" }, "此 profile 尚未安装外部插件。") : null,
-				p.dependencies.map((dep) => h("div", { className: "pm-dep", key: dep.name },
-					h("span", { className: "pm-code" }, dep.name),
-					dep.isBundle ? h("span", { className: "pm-badge good" }, "dsh.bundle") : h("span", { className: "pm-badge" }, "普通依赖"),
-					h("span", { className: "pm-muted" }, dep.spec),
-					h("span", { className: "pm-spacer" }),
-					h("button", { className: "pm-btn", onClick: () => requestOp("update", dep.name) }, "更新"),
-					h("button", { className: "pm-btn danger", onClick: () => requestOp("remove", dep.name) }, "移除"),
-				)),
+				h("div", { className: "pm-cards" },
+					p.dependencies.map((dep) => h(InstalledCard, {
+						key: dep.name,
+						dep,
+						onOpen: setSelected,
+						onUpdate: (name) => requestOp("update", name),
+						onRemove: (name) => requestOp("remove", name),
+						jobId: job !== null && job.dep === dep.name ? job.id : null,
+						onSettled: (ok) => { if (ok && props.onRequested) props.onRequested(); },
+					}))),
 				message !== null ? h("div", { className: message.ok ? "pm-ok" : "pm-error" }, message.text) : null,
+				selectedDep !== null && selectedDep !== undefined
+					? h(Modal, { onClose: () => setSelected(null) },
+						h(InstalledDetailPanel, { dep: selectedDep, profileName: p.name, onClose: () => setSelected(null), onRequested: props.onRequested }))
+					: null,
 			);
 		}
 
