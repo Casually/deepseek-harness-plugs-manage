@@ -19,8 +19,11 @@
     本地界面发起的操作），页面实时滚动显示命令输出，成功 / 失败即时反馈，
     可随时取消。「已安装」页的更新 / 移除同样直接执行。
   - **安装源智能解析**：`github:owner/repo` 源会先查证该仓库同名包是否已
-    发布到 npm 注册表——若已发布则自动改用 npm 包安装（免去 git/SSH 与
-    源码构建，npm 包自带预构建产物）。
+    发布到 npm 注册表——若已发布则自动改用 npm 包安装（npm 包自带预构建
+    产物）；未发布则**经 HTTPS 从 codeload.github.com 下载源码 tarball**
+    （自动走代理配置），解压到 `$DSH_HOME/.plug-manager-src/` 后按本地路径
+    安装。全程不使用 git，彻底避开 pnpm 把 `github:` 转成 git+ssh 导致无
+    SSH key 机器安装失败的问题。
   - **pnpm 兼容兜底**：pnpm 7 在较新 Node 上抓取注册表会报
     `ERR_INVALID_THIS`；检测到此错误时自动改用 npm 完成安装，并手动登记
     bundle 层（复刻 dsh CLI 的 reconcile 逻辑）。

@@ -23,13 +23,16 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 const GH_API = 'https://api.github.com'
 const GH_RAW = 'https://raw.githubusercontent.com'
+const GH_CODELOAD = 'https://codeload.github.com'
+const SRC_DIR_NAME = '.plug-manager-src'
+const SRC_MAX_BYTES = 50 * 1024 * 1024
 const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const NAME_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
@@ -328,6 +331,136 @@ export function apply(ctx, config) {
     } catch {
       return null
     }
+  }
+
+  /**
+   * 经 HTTPS 把远端文件下载到本地（代理走 curl -o，直连用 fetch）。
+   * 与 GitHub API 请求共享代理配置；上限 SRC_MAX_BYTES、180 秒超时。
+   */
+  async function downloadToFile(url, destPath) {
+    const { proxy } = resolveProxy()
+    if (proxy !== '') {
+      if (probeCurl() !== true) {
+        throw new Error('已配置代理（' + proxy + '），但宿主未找到 curl，无法经代理下载')
+      }
+      await new Promise((resolvePromise, rejectPromise) => {
+        const args = [
+          '-x', proxy,
+          '-sS', '-L',
+          '--max-time', '180',
+          '--connect-timeout', '15',
+          '--max-filesize', String(SRC_MAX_BYTES),
+          '-H', 'User-Agent: dsh-plug-manager/0.1',
+          '-o', destPath,
+          '-w', '%{http_code}',
+          url,
+        ]
+        let child
+        try {
+          child = spawn('curl', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+        } catch (error) {
+          rejectPromise(new Error('无法启动 curl：' + (error instanceof Error ? error.message : String(error))))
+          return
+        }
+        let out = ''
+        let stderrText = ''
+        let settled = false
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL')
+          if (settled !== true) { settled = true; rejectPromise(new Error('下载超时（180 秒，代理 ' + proxy + '）：' + url)) }
+        }, 190000)
+        child.stdout.on('data', (chunk) => { out += chunk.toString('utf8') })
+        child.stderr.on('data', (chunk) => { stderrText = (stderrText + chunk.toString('utf8')).slice(-1000) })
+        child.on('error', (error) => {
+          if (settled !== true) { settled = true; clearTimeout(timer); rejectPromise(new Error('curl 调用失败：' + error.message)) }
+        })
+        child.on('close', (code) => {
+          if (settled === true) return
+          settled = true
+          clearTimeout(timer)
+          const status = Number(out.trim())
+          if (code === 0 && status === 200) { resolvePromise(); return }
+          const hints = { 5: '无法解析代理', 7: '无法连接代理', 28: '超时', 35: 'TLS 错误', 56: '接收失败', 60: 'SSL 证书错误', 63: '响应超过大小上限' }
+          const hint = hints[code] !== undefined ? '（' + hints[code] + '）' : ''
+          const detail = stderrText.trim() !== '' ? stderrText.trim() : 'curl 退出码 ' + code
+          rejectPromise(new Error('下载失败' + hint + '：HTTP ' + (Number.isFinite(status) && status > 0 ? status : '未知') + ' — ' + detail))
+        })
+      })
+      return
+    }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 180000)
+    try {
+      const res = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+      if (res.status !== 200) throw new Error('下载失败：HTTP ' + res.status + ' — ' + url)
+      const declared = Number(res.headers.get('content-length') ?? '0')
+      if (declared > SRC_MAX_BYTES) throw new Error('源码包过大（超过 50 MB）：' + url)
+      const buffer = Buffer.from(await res.arrayBuffer())
+      if (buffer.byteLength > SRC_MAX_BYTES) throw new Error('源码包过大（超过 50 MB）：' + url)
+      await writeFile(destPath, buffer)
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw new Error('下载超时（180 秒）：' + url)
+      throw error
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * `github:` 源且无可发布的 npm 包时的源码安装路径：经 HTTPS 从
+   * codeload.github.com 下载 tarball（自动走代理配置），解压到
+   * $DSH_HOME/.plug-manager-src/<owner>--<repo>，返回本地目录作为安装源。
+   * 全程不用 git，彻底避开 pnpm 把 github:/git+https 转成 git+ssh 的问题。
+   * @param {string} spec - `github:owner/repo[#ref]`
+   * @param {(text: string) => void} log - 进度输出（可传空函数）
+   */
+  async function downloadGitHubSource(spec, log) {
+    const m = /^github:([A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)(?:#([A-Za-z0-9][A-Za-z0-9._/-]*))?$/.exec(spec)
+    if (m === null) throw new Error('无效的 github: 源：' + spec)
+    const fullName = m[1]
+    let ref = typeof m[2] === 'string' && m[2] !== '' ? m[2] : ''
+    if (ref === '') {
+      try {
+        const repo = await ghJson(GH_API + '/repos/' + fullName)
+        ref = typeof repo.default_branch === 'string' && repo.default_branch !== '' ? repo.default_branch : 'main'
+      } catch {
+        ref = 'main' // 拿不到默认分支（限流/离线）时用 main 兜底
+      }
+    }
+    log('未发布 npm 包，改经 HTTPS 下载源码 ' + fullName + '@' + ref + '（codeload.github.com，不经 git/SSH）…\n')
+    const srcRoot = join(dshHomeDir(), SRC_DIR_NAME)
+    const dirName = fullName.replace('/', '--')
+    const dir = join(srcRoot, dirName)
+    const tarball = join(srcRoot, dirName + '.tar.gz')
+    mkdirSync(srcRoot, { recursive: true })
+    const candidates = [GH_CODELOAD + '/' + fullName + '/tar.gz/' + ref]
+    if (ref.indexOf('/') !== -1) candidates.push(GH_CODELOAD + '/' + fullName + '/tar.gz/refs/heads/' + ref)
+    let lastError = null
+    for (const url of candidates) {
+      try {
+        await downloadToFile(url, tarball)
+        lastError = null
+        break
+      } catch (error) {
+        lastError = error
+      }
+    }
+    if (lastError !== null) {
+      rmSync(tarball, { force: true })
+      throw new Error('源码下载失败：' + (lastError instanceof Error ? lastError.message : String(lastError)) + '。若网络受限，请在「GitHub 代理」中配置代理后重试。')
+    }
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      mkdirSync(dir, { recursive: true })
+      const tar = spawnSync('tar', ['-xzf', tarball, '-C', dir, '--strip-components=1'], { timeout: 120000 })
+      if (tar.status !== 0) throw new Error('解压源码失败（tar 退出码 ' + tar.status + '）')
+      const manifestRaw = await readFile(join(dir, 'package.json'), 'utf8').catch(() => '')
+      if (manifestRaw === '') throw new Error('源码根目录缺少 package.json，不像有效的 DSH 插件仓库')
+    } finally {
+      rmSync(tarball, { force: true })
+    }
+    log('源码已解压到 ' + dir + '\n')
+    return { path: dir, ref }
   }
 
   /** 探测 DSH 主目录、dsh CLI 入口、pnpm/node（只读）。 */
@@ -749,18 +882,12 @@ export function apply(ctx, config) {
   /** 启动一个 UI 直接执行的任务；立即返回 job（异步执行中）。 */
   async function startPluginJob(op, profile, key) {
     const env = await hostEnv()
-    let resolvedSpec = key
-    let note = ''
-    if (op === 'install' && classifySpec(key) === 'github') {
-      const resolved = await resolveGitHubSpec(key)
-      if (resolved !== null) { resolvedSpec = resolved.spec; note = resolved.note }
-    }
     const id = 'job-' + (++jobSeq)
     const job = {
       id, op, profile,
-      spec: op === 'install' ? resolvedSpec : key,
+      spec: key,
       originalSpec: key,
-      note, status: 'running', output: '', exitCode: null,
+      note: '', status: 'running', output: '', exitCode: null,
       startedAt: Date.now(), finishedAt: null, child: null,
     }
     jobs.set(id, job)
@@ -769,13 +896,29 @@ export function apply(ctx, config) {
     void (async () => {
       try {
         if (op === 'install') {
-          const args = ['plugin', '--profile', profile, 'add', '-w', resolvedSpec]
+          // github: 源解析：优先等价的 npm 包；未发布则经 HTTPS 下载源码
+          // tarball 并按本地路径安装——全程不用 git（pnpm 会把 github: 转成
+          // git+ssh，没有 SSH key 的机器必然失败）。
+          let installSpec = key
+          if (classifySpec(key) === 'github') {
+            const resolved = await resolveGitHubSpec(key)
+            if (resolved !== null) {
+              installSpec = resolved.spec
+              job.note = resolved.note
+            } else {
+              const src = await downloadGitHubSource(key, (text) => appendOutput(job, text))
+              installSpec = src.path
+              job.note = '未发布 npm 包，已经 HTTPS 下载源码 ' + key.slice('github:'.length) + '@' + src.ref + '，按本地路径安装（不经 git/SSH）'
+            }
+            job.spec = installSpec
+          }
+          const args = ['plugin', '--profile', profile, 'add', '-w', installSpec]
           appendOutput(job, '$ ' + env.launcher.label + ' ' + args.join(' ') + '\n')
           await runChild(job, env.launcher.cmd, env.launcher.args.concat(args), env.launcher.cwd !== undefined ? env.launcher.cwd : env.dshHome)
           if (job.exitCode === 0) {
             appendOutput(job, '\n[plug-manager] 安装成功 — 重启 DSH 后组合新 bundle 层\n')
           } else if (job.output.indexOf('ERR_INVALID_THIS') !== -1) {
-            await npmFallbackInstall(job, env, resolvedSpec)
+            await npmFallbackInstall(job, env, installSpec)
             if (job.status === 'success') appendOutput(job, '\n[plug-manager] 安装成功（npm 兜底）— 重启 DSH 后组合新 bundle 层\n')
           }
         } else if (op === 'remove') {
@@ -853,14 +996,21 @@ export function apply(ctx, config) {
       if (classifySpec(spec) === undefined) {
         throw new Error('不支持的安装源格式：' + spec + '（应为 npm 包名[@版本]、github:owner/repo[#ref]、git+<url>、.tgz URL 或路径）')
       }
-      // github: 源优先解析为等价的 npm 包（若已发布）：pnpm 会把 github:
-      // 简写转成 git+ssh，没有 SSH key 的机器上必然失败，且 git 安装拿到的是
-      // 源码、还要跑包的 prepare 构建。npm 包带预构建产物，严格更稳。
+      // github: 源优先解析为等价的 npm 包（若已发布）；未发布则经 HTTPS 下载
+      // 源码 tarball 按本地路径安装。pnpm 会把 github: 简写转成 git+ssh，没有
+      // SSH key 的机器必然失败——两条兜底都绕开 git。
       let installSpec = spec
       let installNote = ''
       if (classifySpec(spec) === 'github') {
         const resolved = await resolveGitHubSpec(spec)
-        if (resolved !== null) { installSpec = resolved.spec; installNote = resolved.note }
+        if (resolved !== null) {
+          installSpec = resolved.spec
+          installNote = resolved.note
+        } else {
+          const src = await downloadGitHubSource(spec, () => {})
+          installSpec = src.path
+          installNote = '未发布 npm 包，已经 HTTPS 下载源码 ' + spec.slice('github:'.length) + '@' + src.ref + '，按本地路径安装（不经 git/SSH）'
+        }
       }
       // profile 目录本身是 pnpm workspace 根目录；pnpm 7 对不带 -w 的根目录
       // add 报 ERR_PNPM_ADDING_TO_ROOT，因此这里显式带上 -w。
