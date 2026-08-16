@@ -969,6 +969,8 @@ window.__ModuleLoader__.load({
 				h("div", { className: "pm-tabs" },
 					h("button", { className: "pm-tab" + (tab === "discover" ? " active" : ""), onClick: () => setTab("discover") }, "发现"),
 					h("button", { className: "pm-tab" + (tab === "installed" ? " active" : ""), onClick: () => setTab("installed") }, "已安装"),
+					h("span", { className: "pm-spacer" }),
+					h("a", { className: "pm-btn", style: { alignSelf: "center", marginBottom: "6px" }, href: "https://casually.github.io/dsh-plug-hub/", target: "_blank", rel: "noreferrer noopener", title: "在新窗口打开插件社区" }, "插件社区 ↗"),
 				),
 				error !== "" ? h("div", { className: "pm-error" }, error) : null,
 				tab === "discover"
