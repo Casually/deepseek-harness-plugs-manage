@@ -497,10 +497,11 @@ window.__ModuleLoader__.load({
 		}
 
 		function RestartButton() {
+			const [confirming, setConfirming] = React.useState(false);
 			const [restarting, setRestarting] = React.useState(false);
 			const [error, setError] = React.useState("");
 			function doRestart() {
-				if (!window.confirm("将重启 DSH 服务以应用变更。\n\n重启后页面会自动等待服务恢复并刷新；若自动拉起失败，需要手动启动 DSH。\n\n确定现在重启吗？")) return;
+				setConfirming(false);
 				setError("");
 				rpc("restart", { confirm: "1" })
 					.then((r) => {
@@ -511,8 +512,19 @@ window.__ModuleLoader__.load({
 			}
 			if (restarting) return h(RestartOverlay, null);
 			return h(React.Fragment, null,
-				h("button", { className: "pm-btn primary", onClick: doRestart }, "重启 DSH 并刷新页面"),
-				error !== "" ? h("span", { className: "pm-error" }, error) : null);
+				h("button", { className: "pm-btn primary", onClick: () => setConfirming(true) }, "重启 DSH 并刷新页面"),
+				error !== "" ? h("span", { className: "pm-error" }, error) : null,
+				confirming ? h(Modal, { onClose: () => setConfirming(false) },
+					h("div", { className: "pm-detail" },
+						h("div", { className: "pm-row" },
+							h("strong", { style: { fontSize: "15px" } }, "重启 DSH 服务？"),
+							h("span", { className: "pm-spacer" }),
+							h("button", { className: "pm-btn", onClick: () => setConfirming(false) }, "关闭")),
+						h("div", { className: "pm-muted" },
+							"重启期间服务短暂不可用；服务恢复后页面将自动等待并刷新。若自动拉起失败，需要手动启动 DSH 后刷新页面。"),
+						h("div", { className: "pm-row" },
+							h("button", { className: "pm-btn primary", onClick: doRestart }, "确认重启"),
+							h("button", { className: "pm-btn", onClick: () => setConfirming(false) }, "取消")))) : null);
 		}
 
 		function InstallBox(props) {
@@ -876,6 +888,10 @@ window.__ModuleLoader__.load({
 					.catch((e) => setMessage({ ok: false, text: errMsg(e) }));
 			}
 			const deps = Array.isArray(p.dependencies) ? p.dependencies.map(normalizeDep) : [];
+			const filter = typeof props.filter === "string" ? props.filter : "";
+			const visibleDeps = filter === ""
+				? deps
+				: deps.filter((d) => (d.name + " " + d.spec + " " + d.description).toLowerCase().indexOf(filter) !== -1);
 			const selectedDep = selected === null ? null : deps.find((d) => d.name === selected) ?? null;
 			return h("div", { className: "pm-profile-card" },
 				h("div", { className: "pm-row" },
@@ -886,8 +902,9 @@ window.__ModuleLoader__.load({
 				h("div", { className: "pm-muted" }, "Bundle 栈：" + (p.bundles.length > 0 ? p.bundles.join(" → ") : "（空）")),
 				job !== null && job.dep === "" ? h(JobPanel, { jobId: job.id, onSettled: (ok) => { if (ok && props.onRequested) props.onRequested(); } }) : null,
 				deps.length === 0 ? h("div", { className: "pm-muted" }, "此 profile 尚未安装外部插件。") : null,
+				deps.length > 0 && visibleDeps.length === 0 ? h("div", { className: "pm-muted" }, "没有匹配「" + filter + "」的插件。") : null,
 				h("div", { className: "pm-cards" },
-					deps.map((dep) => h(InstalledCard, {
+					visibleDeps.map((dep) => h(InstalledCard, {
 						key: dep.name,
 						dep,
 						onOpen: setSelected,
@@ -906,7 +923,9 @@ window.__ModuleLoader__.load({
 
 		function InstalledView(props) {
 			const env = props.env;
+			const [query, setQuery] = React.useState("");
 			if (env === null) return h("div", { className: "pm-muted" }, "正在加载 profile…");
+			const filter = query.trim().toLowerCase();
 			return h(React.Fragment, null,
 				h("div", { className: "pm-note" },
 					h("div", null, "DSH 主目录：", h("span", { className: "pm-code" }, env.dshHome)),
@@ -916,7 +935,16 @@ window.__ModuleLoader__.load({
 					h("div", null, "pnpm：", env.pnpm !== "" ? h("span", { className: "pm-code" }, env.pnpm) : h("span", { className: "pm-error" }, "未找到")),
 					h("div", { className: "pm-muted" }, "等效命令：dsh plugin --profile <name> add -w <package>（profile 本身是 pnpm workspace 根目录，必须带 -w）。此处的操作由插件管理器直接执行并实时显示输出。"),
 				),
-				env.profiles.map((p) => h(ProfileCard, { key: p.name, profile: p, onRequested: props.onRequested })),
+				h("div", { className: "pm-toolbar" },
+					h("input", {
+						className: "pm-input",
+						placeholder: "搜索已安装插件（名称 / 安装源 / 描述）…",
+						value: query,
+						onChange: (e) => setQuery(e.target.value),
+					}),
+					query !== "" ? h("button", { className: "pm-btn", onClick: () => setQuery("") }, "清除") : null,
+				),
+				env.profiles.map((p) => h(ProfileCard, { key: p.name, profile: p, onRequested: props.onRequested, filter })),
 			);
 		}
 
