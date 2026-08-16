@@ -1208,6 +1208,38 @@ export function apply(ctx, config) {
     return { ok: true, job: jobSnapshot(job) }
   })
 
+  /**
+   * 重启 DSH 服务：用当前进程的启动方式（hostEnv launcher + 原始启动参数）
+   * 拉起一个分离的替代进程，然后退出当前进程。替代脚本先等旧进程释放端口，
+   * 新进程若 6 秒内退出（如端口仍占用）会自动重试。页面侧轮询等待服务恢复
+   * 后自动刷新。
+   */
+  route('/plug-mgr/restart', async (params) => {
+    if (params.get('confirm') !== '1') return { ok: false, error: '重启 DSH 需要显式确认（confirm=1）' }
+    let env
+    try {
+      env = await hostEnv()
+    } catch (error) {
+      return { ok: false, error: '无法重启：' + (error instanceof Error ? error.message : String(error)) }
+    }
+    const serverArgs = process.argv.slice(2)
+    if (serverArgs.length === 0) return { ok: false, error: '无法识别当前服务的启动参数（缺少子命令），重启中止' }
+    const launchParts = [env.launcher.cmd].concat(env.launcher.args, serverArgs)
+    const quoted = launchParts.map((part) => "'" + String(part).replace(/'/g, "'\\''") + "'").join(' ')
+    const cwd = env.launcher.cwd !== undefined ? env.launcher.cwd : process.cwd()
+    const script = 'sleep 2; i=0; while [ "$i" -lt 5 ]; do ' + quoted + ' & child=$!; sleep 6; if kill -0 "$child" 2>/dev/null; then exit 0; fi; i=$((i+1)); sleep 2; done; exit 1'
+    let child
+    try {
+      child = spawn('sh', ['-c', script], { cwd, detached: true, stdio: 'inherit' })
+    } catch (error) {
+      return { ok: false, error: '无法拉起替代进程：' + (error instanceof Error ? error.message : String(error)) }
+    }
+    child.on('error', () => {})
+    child.unref()
+    setTimeout(() => process.exit(0), 1000)
+    return { ok: true, message: 'DSH 正在重启，页面将自动等待服务恢复并刷新' }
+  })
+
   route('/plug-mgr/pending', async (params) => {
     const cancel = params.get('cancel')
     if (typeof cancel === 'string' && cancel !== '') {

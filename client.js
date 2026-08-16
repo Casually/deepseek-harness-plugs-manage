@@ -22,6 +22,9 @@ window.__ModuleLoader__.load({
 			".pm-btn.primary:hover{border-color:var(--dsw-alias-label-primary,#111);}",
 			".pm-btn.danger{color:var(--dsw-alias-state-error-primary,#d33);}",
 			".pm-btn:disabled{opacity:.5;cursor:default;}",
+			".pm-btn:active:not(:disabled){transform:translateY(1px);}",
+			".pm-name:hover{text-decoration:underline;}",
+			".pm-name:active{opacity:.6;}",
 			".pm-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}",
 			".pm-card{border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:10px;background:var(--dsw-alias-bg-layer-1,#fff);padding:14px;display:flex;flex-direction:column;gap:8px;}",
 			".pm-card-head{display:flex;gap:10px;align-items:center;}",
@@ -36,12 +39,20 @@ window.__ModuleLoader__.load({
 			".pm-error{color:var(--dsw-alias-state-error-primary,#d33);}",
 			".pm-ok{color:var(--dsw-alias-state-success-primary,#2a9d4a);}",
 			".pm-warn{color:var(--dsw-alias-state-warn-primary,#c8860a);}",
-			".pm-detail{border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:10px;background:var(--dsw-alias-bg-layer-1,#fff);padding:16px;display:flex;flex-direction:column;gap:12px;}",
+			".pm-detail{display:flex;flex-direction:column;gap:12px;}",
+			".pm-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:900;display:flex;align-items:flex-start;justify-content:center;padding:4vh 16px;animation:pm-fade .18s ease-out;}",
+			".pm-modal{width:min(880px,100%);max-height:92vh;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.28);animation:pm-pop .22s ease-out;}",
+			".pm-modal-body{overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;}",
+			"@keyframes pm-fade{from{opacity:0}to{opacity:1}}",
+			"@keyframes pm-pop{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}",
+			".pm-restart-overlay{position:fixed;inset:0;background:var(--dsw-alias-bg-base,#fff);z-index:1000;display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;color:var(--dsw-alias-label-primary,#111);font-size:14px;text-align:center;padding:20px;}",
+			".pm-spin{width:34px;height:34px;border-radius:50%;border:3px solid var(--dsw-alias-border-l2,#bbb);border-top-color:var(--dsw-alias-label-primary,#111);animation:pm-rotate .9s linear infinite;}",
+			"@keyframes pm-rotate{to{transform:rotate(360deg)}}",
 			".pm-facts{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}",
 			".pm-badge{padding:2px 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1,#ddd);font-size:11px;color:var(--dsw-alias-label-secondary,#666);background:var(--dsw-alias-bg-layer-2,#f7f7f7);}",
 			".pm-badge.good{color:var(--dsw-alias-state-success-primary,#2a9d4a);border-color:currentColor;}",
 			".pm-badge.bad{color:var(--dsw-alias-state-error-primary,#d33);border-color:currentColor;}",
-			".pm-readme{max-height:380px;overflow:auto;background:var(--dsw-alias-bg-layer-2,#f7f7f7);border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:8px;padding:14px;}",
+			".pm-readme{overflow-x:auto;background:var(--dsw-alias-bg-layer-2,#f7f7f7);border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:8px;padding:14px;}",
 			".pm-md{line-height:1.65;word-break:break-word;font-size:13px;color:var(--dsw-alias-label-primary,#222);}",
 			".pm-md h1{font-size:1.35em;margin:.6em 0 .4em;padding-bottom:.25em;border-bottom:1px solid var(--dsw-alias-border-l1,#e5e5e5);}",
 			".pm-md h2{font-size:1.2em;margin:.7em 0 .4em;padding-bottom:.2em;border-bottom:1px solid var(--dsw-alias-border-l1,#e5e5e5);}",
@@ -319,9 +330,73 @@ window.__ModuleLoader__.load({
 				job.note !== "" ? h("div", { className: "pm-muted" }, job.note) : null,
 				h("pre", { className: "pm-output", ref: (el) => { if (el !== null) el.scrollTop = el.scrollHeight; } },
 					job.output !== "" ? job.output : "（暂无输出）"),
-				job.status === "success" ? h("div", { className: "pm-ok" }, "已完成 — 重启 DSH 后生效。") : null,
+				job.status === "success" ? h("div", { className: "pm-row" },
+					h("span", { className: "pm-ok" }, "已完成 — 需重启 DSH 后生效"),
+					h("span", { className: "pm-spacer" }),
+					h(RestartButton, null)) : null,
 				job.status === "error" ? h("div", { className: "pm-error" }, "执行失败 — 请查看上方输出。常见原因：网络/代理、pnpm 与 Node 版本不兼容、包不存在。") : null,
 			);
+		}
+
+		function Modal(props) {
+			React.useEffect(() => {
+				function onKey(e) { if (e.key === "Escape") props.onClose(); }
+				document.addEventListener("keydown", onKey);
+				return () => document.removeEventListener("keydown", onKey);
+			}, []);
+			return h("div", {
+				className: "pm-modal-backdrop",
+				onClick: (e) => { if (e.target === e.currentTarget) props.onClose(); },
+			}, h("div", { className: "pm-modal" },
+				h("div", { className: "pm-modal-body" }, props.children)));
+		}
+
+		function RestartOverlay() {
+			const [elapsed, setElapsed] = React.useState(0);
+			const [failed, setFailed] = React.useState(false);
+			React.useEffect(() => {
+				let down = false;
+				let tries = 0;
+				const t0 = Date.now();
+				const timer = setInterval(() => {
+					setElapsed(Math.round((Date.now() - t0) / 1000));
+					tries++;
+					fetch(window.location.href, { method: "HEAD", cache: "no-store" })
+						.then(() => { if (down) window.location.reload(); })
+						.catch(() => { down = true; });
+					if (tries > 60) { setFailed(true); clearInterval(timer); }
+				}, 2000);
+				return () => clearInterval(timer);
+			}, []);
+			return h("div", { className: "pm-restart-overlay" },
+				failed
+					? h(React.Fragment, null,
+						h("div", { style: { fontSize: "16px", fontWeight: 600 } }, "重启超时"),
+						h("div", null, "120 秒内未检测到服务恢复——请手动启动 DSH，然后刷新本页面。"),
+						h("button", { className: "pm-btn primary", onClick: () => window.location.reload() }, "刷新页面"))
+					: h(React.Fragment, null,
+						h("div", { className: "pm-spin" }),
+						h("div", { style: { fontWeight: 600 } }, "DSH 正在重启…"),
+						h("div", null, "服务恢复后页面将自动刷新（已等待 " + elapsed + " 秒）")));
+		}
+
+		function RestartButton() {
+			const [restarting, setRestarting] = React.useState(false);
+			const [error, setError] = React.useState("");
+			function doRestart() {
+				if (!window.confirm("将重启 DSH 服务以应用变更。\n\n重启后页面会自动等待服务恢复并刷新；若自动拉起失败，需要手动启动 DSH。\n\n确定现在重启吗？")) return;
+				setError("");
+				rpc("restart", { confirm: "1" })
+					.then((r) => {
+						if (r && r.ok) setRestarting(true);
+						else setError(r && r.error ? r.error : "重启请求失败");
+					})
+					.catch((e) => setError(errMsg(e)));
+			}
+			if (restarting) return h(RestartOverlay, null);
+			return h(React.Fragment, null,
+				h("button", { className: "pm-btn primary", onClick: doRestart }, "重启 DSH 并刷新页面"),
+				error !== "" ? h("span", { className: "pm-error" }, error) : null);
 		}
 
 		function InstallBox(props) {
@@ -553,7 +628,8 @@ window.__ModuleLoader__.load({
 					loading ? " — 加载中…" : ""),
 				error !== "" ? h("div", { className: "pm-error" }, error) : null,
 				selected !== null
-					? h(DetailPanel, { fullName: selected, env: props.env, defaultProfile: props.defaultProfile, onClose: () => setSelected(null), onRequested: props.onRequested })
+					? h(Modal, { onClose: () => setSelected(null) },
+						h(DetailPanel, { fullName: selected, env: props.env, defaultProfile: props.defaultProfile, onClose: () => setSelected(null), onRequested: props.onRequested }))
 					: null,
 				h("div", { className: "pm-cards" }, repos.map((repo) => h(RepoCard, { key: repo.fullName, repo, onOpen: setSelected }))),
 				total !== null && repos.length < total
