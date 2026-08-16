@@ -459,6 +459,44 @@ export function apply(ctx, config) {
     }
   }
 
+  /** 为解压后的源码安装其声明的运行时依赖（在源码目录内执行 npm install）。
+   * 源码包以 file:/link: 目录依赖装入 profile，Node 按真实路径（即源码目录）
+   * 解析其中的裸导入——依赖必须装在源码目录自身的 node_modules 里，否则
+   * DSH 启动 import 该插件时报 ERR_MODULE_NOT_FOUND（whale-girl 缺
+   * schemastery 即此问题）。失败时抛错，阻止把坏组合装入 profile。 */
+  async function installSourceDependencies(dir, log) {
+    let manifest
+    try {
+      manifest = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'))
+    } catch {
+      return
+    }
+    const deps = manifest.dependencies !== null && typeof manifest.dependencies === 'object' ? Object.keys(manifest.dependencies) : []
+    if (deps.length === 0) {
+      log('该源码包未声明运行时依赖，跳过依赖安装\n')
+      return
+    }
+    log('源码包声明了 ' + deps.length + ' 个运行时依赖（' + deps.slice(0, 6).join(', ') + (deps.length > 6 ? '…' : '') + '），先在源码目录内安装…\n')
+    // 刻意不注入本插件的 GitHub 代理设置：那是给 GitHub 端点用的，强加给
+    // npm 可能反而破坏注册表连接（实测 7897 代理对 npm registry TLS 不兼容）。
+    // npm 用自己的配置体系（npm config / .npmrc）；宿主环境里已有的
+    // HTTP(S)_PROXY 等变量会随 process.env 自然继承。
+    const args = ['install', '--omit=dev', '--legacy-peer-deps', '--no-audit', '--no-fund']
+    const result = await new Promise((resolvePromise) => {
+      let out = ''
+      const child = spawn('npm', args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] })
+      child.stdout.on('data', (chunk) => { out += String(chunk); if (out.length > 48 * 1024) out = out.slice(-48 * 1024) })
+      child.stderr.on('data', (chunk) => { out += String(chunk); if (out.length > 48 * 1024) out = out.slice(-48 * 1024) })
+      const timer = setTimeout(() => { child.kill('SIGKILL') }, 600000)
+      child.on('close', (code) => { clearTimeout(timer); resolvePromise({ code, out }) })
+      child.on('error', (error) => { clearTimeout(timer); resolvePromise({ code: -1, out: out + '\n' + String(error) }) })
+    })
+    if (result.code !== 0) {
+      throw new Error('源码依赖安装失败（npm install 退出码 ' + result.code + '）：' + result.out.slice(-1500) + '\n为避免「装完启动即崩溃」，该插件未装入 profile；可配置代理后重试。')
+    }
+    log('源码依赖安装完成（' + dir + '/node_modules）\n')
+  }
+
   /**
    * `github:` 源且无可发布的 npm 包时的源码安装路径：经 HTTPS 从
    * codeload.github.com 下载 tarball（自动走代理配置），解压到
@@ -513,6 +551,7 @@ export function apply(ctx, config) {
       rmSync(tarball, { force: true })
     }
     log('源码已解压到 ' + dir + '\n')
+    await installSourceDependencies(dir, log)
     return { path: dir, ref }
   }
 

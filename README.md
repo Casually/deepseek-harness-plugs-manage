@@ -29,7 +29,10 @@
     产物）；未发布则**经 HTTPS 从 codeload.github.com 下载源码 tarball**
     （自动走代理配置），解压到 `$DSH_HOME/.plug-manager-src/` 后按本地路径
     安装。全程不使用 git，彻底避开 pnpm 把 `github:` 转成 git+ssh 导致无
-    SSH key 机器安装失败的问题。
+    SSH key 机器安装失败的问题。源码包若声明了运行时依赖，会先在源码目录
+    内执行 `npm install`（目录依赖按真实路径解析裸导入，依赖必须装在源码
+    目录里），避免「装完一重启就 ERR_MODULE_NOT_FOUND」；依赖安装失败时
+    直接中止，不把坏组合装入 profile。
   - **pnpm 兼容兜底**：pnpm 7 在较新 Node 上抓取注册表会报
     `ERR_INVALID_THIS`；检测到此错误时自动改用 npm 完成安装，并手动登记
     bundle 层（复刻 dsh CLI 的 reconcile 逻辑）。
