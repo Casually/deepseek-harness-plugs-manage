@@ -935,6 +935,56 @@ export function apply(ctx, config) {
     finishJob(job, 0)
   }
 
+  /** 读取 profile 中某依赖的安装源 spec（不存在或读取失败返回 ''）。 */
+  async function readDepSpec(profile, packageName) {
+    try {
+      const manifest = JSON.parse(await readFile(join(dshHomeDir(), 'profiles', profile, 'package.json'), 'utf8'))
+      if (manifest.dependencies !== null && typeof manifest.dependencies === 'object' && typeof manifest.dependencies[packageName] === 'string') {
+        return manifest.dependencies[packageName]
+      }
+    } catch { /* manifest 不可读时按未知源处理 */ }
+    return ''
+  }
+
+  /** 移除成功后的收尾：验证依赖与 bundle 层确已移除，并清理 plug-manager
+   * 下载的本地源码目录（.plug-manager-src/<owner>--<repo>）。返回日志行。 */
+  async function finishRemove(profile, packageName, removedSpec) {
+    const notes = []
+    const profileDir = join(dshHomeDir(), 'profiles', profile)
+    try {
+      const after = JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8'))
+      const deps = after.dependencies !== null && typeof after.dependencies === 'object' ? after.dependencies : {}
+      const dsh = after.dsh !== null && typeof after.dsh === 'object' ? after.dsh : {}
+      const profileCfg = dsh.profile !== null && typeof dsh.profile === 'object' ? dsh.profile : {}
+      const bundles = Array.isArray(profileCfg.bundles) ? profileCfg.bundles : []
+      if (deps[packageName] !== undefined || bundles.indexOf(packageName) !== -1) {
+        notes.push('警告：manifest 中仍残留 ' + packageName
+          + '（依赖：' + (deps[packageName] !== undefined ? '在' : '已移除')
+          + '，bundle 层：' + (bundles.indexOf(packageName) !== -1 ? '在' : '已移除') + '）— 移除可能未彻底完成')
+      } else {
+        notes.push('已验证：' + packageName + ' 不再出现在依赖与 bundle 层中')
+      }
+    } catch {
+      notes.push('无法回读 profile manifest 验证移除结果')
+    }
+    // 清理源码安装的本地目录：spec 形如 file:../../.plug-manager-src/<dir>
+    // 或 link:/abs/.../.plug-manager-src/<dir>；只删 DSH 主目录下的该目录。
+    if (typeof removedSpec === 'string' && removedSpec.indexOf(SRC_DIR_NAME + '/') !== -1) {
+      const segments = removedSpec.split(/[/\\]/).filter((part) => part !== '' && part !== '.' && part !== '..')
+      const dirName = segments.length > 0 ? segments[segments.length - 1] : ''
+      if (/^[A-Za-z0-9_.-]+$/.test(dirName) && dirName !== '.' && dirName !== '..') {
+        const srcDir = join(dshHomeDir(), SRC_DIR_NAME, dirName)
+        try {
+          rmSync(srcDir, { recursive: true, force: true })
+          notes.push('已清理本地源码目录：' + srcDir)
+        } catch (error) {
+          notes.push('清理本地源码目录失败（' + srcDir + '）：' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
+    }
+    return notes
+  }
+
   /** 启动一个 UI 直接执行的任务；立即返回 job（异步执行中）。 */
   async function startPluginJob(op, profile, key) {
     const env = await hostEnv()
@@ -978,10 +1028,16 @@ export function apply(ctx, config) {
             if (job.status === 'success') appendOutput(job, '\n[plug-manager] 安装成功（npm 兜底）— 重启 DSH 后组合新 bundle 层\n')
           }
         } else if (op === 'remove') {
+          // 彻底移除：先记录安装源 → CLI 移除（pnpm remove + bundle 对账）→
+          // 验证 manifest 结果 → 清理 plug-manager 下载的本地源码目录。
+          const removedSpec = await readDepSpec(profile, key)
           const args = ['plugin', '--profile', profile, 'remove', key]
           appendOutput(job, '$ ' + env.launcher.label + ' ' + args.join(' ') + '\n')
           await runChild(job, env.launcher.cmd, env.launcher.args.concat(args), env.launcher.cwd !== undefined ? env.launcher.cwd : env.dshHome)
-          if (job.exitCode === 0) appendOutput(job, '\n[plug-manager] 移除成功 — 重启 DSH 后该层不再组合\n')
+          if (job.exitCode === 0) {
+            appendOutput(job, '\n[plug-manager] 移除成功 — 重启 DSH 后系统不再加载该插件\n')
+            for (const note of await finishRemove(profile, key, removedSpec)) appendOutput(job, '[plug-manager] ' + note + '\n')
+          }
         } else {
           const args = key !== '' ? ['plugin', '--profile', profile, 'update', key] : ['plugin', '--profile', profile, 'update']
           appendOutput(job, '$ ' + env.launcher.label + ' ' + args.join(' ') + '\n')
@@ -1102,11 +1158,13 @@ export function apply(ctx, config) {
       const profile = assertProfile(args.profile)
       const packageName = safeArg(String(args.packageName ?? ''), 'packageName')
       if (!NAME_RE.test(packageName)) throw new Error('packageName 必须是 npm 包名：' + packageName)
+      const removedSpec = await readDepSpec(profile, packageName)
       const result = await runDshPlugin(exec, 'plug_remove', profile, ['remove', packageName], '从 profile "' + profile + '" 移除插件 "' + packageName + '"。')
       result.op = 'remove'
       if (result.ok === true) {
         fulfilPending('remove', profile, packageName)
-        result.summary = '已从 profile ' + profile + ' 移除 ' + packageName + ' — 请重启 DSH 以移除该层'
+        const notes = await finishRemove(profile, packageName, removedSpec)
+        result.summary = '已从 profile ' + profile + ' 移除 ' + packageName + '（' + notes.join('；') + '）— 请重启 DSH，系统不再加载该插件'
       }
       return result
     },
