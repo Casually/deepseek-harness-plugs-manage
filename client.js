@@ -52,7 +52,9 @@ window.__ModuleLoader__.load({
 			".pm-badge{padding:2px 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1,#ddd);font-size:11px;color:var(--dsw-alias-label-secondary,#666);background:var(--dsw-alias-bg-layer-2,#f7f7f7);}",
 			".pm-badge.good{color:var(--dsw-alias-state-success-primary,#2a9d4a);border-color:currentColor;}",
 			".pm-badge.bad{color:var(--dsw-alias-state-error-primary,#d33);border-color:currentColor;}",
-			".pm-readme{overflow-x:auto;background:var(--dsw-alias-bg-layer-2,#f7f7f7);border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:8px;padding:14px;}",
+			".pm-readme{max-height:min(62vh,640px);overflow:auto;background:var(--dsw-alias-bg-layer-2,#f7f7f7);border:1px solid var(--dsw-alias-border-l1,#ddd);border-radius:8px;padding:14px;}",
+			".pm-html{display:flex;flex-direction:column;gap:8px;}",
+			".pm-html img,.pm-md img{max-width:100%;}",
 			".pm-md{line-height:1.65;word-break:break-word;font-size:13px;color:var(--dsw-alias-label-primary,#222);}",
 			".pm-md h1{font-size:1.35em;margin:.6em 0 .4em;padding-bottom:.25em;border-bottom:1px solid var(--dsw-alias-border-l1,#e5e5e5);}",
 			".pm-md h2{font-size:1.2em;margin:.7em 0 .4em;padding-bottom:.2em;border-bottom:1px solid var(--dsw-alias-border-l1,#e5e5e5);}",
@@ -131,6 +133,69 @@ window.__ModuleLoader__.load({
 			return t.split("|").map((c) => c.trim());
 		}
 
+		// ---- README 中的 HTML：DOMParser 解析 + 白名单净化后转 React 元素 ----
+		const HTML_DROP_TAGS = { script: 1, style: 1, iframe: 1, frame: 1, frameset: 1, object: 1, embed: 1, link: 1, meta: 1, base: 1, form: 1, input: 1, textarea: 1, select: 1, button: 1, svg: 1, math: 1, template: 1, title: 1, noscript: 1, applet: 1, area: 1, map: 1 };
+		const HTML_ALLOWED_TAGS = { a: 1, abbr: 1, b: 1, blockquote: 1, br: 1, caption: 1, center: 1, code: 1, dd: 1, del: 1, details: 1, div: 1, dl: 1, dt: 1, em: 1, figcaption: 1, figure: 1, h1: 1, h2: 1, h3: 1, h4: 1, h5: 1, h6: 1, hr: 1, i: 1, img: 1, ins: 1, kbd: 1, li: 1, mark: 1, ol: 1, p: 1, picture: 1, pre: 1, q: 1, s: 1, samp: 1, small: 1, source: 1, span: 1, strike: 1, strong: 1, sub: 1, summary: 1, sup: 1, table: 1, tbody: 1, td: 1, tfoot: 1, th: 1, thead: 1, tr: 1, u: 1, ul: 1, var: 1 };
+		const HTML_VOID_TAGS = { br: 1, hr: 1, img: 1, source: 1 };
+		const HTML_ALLOWED_ATTRS = { align: 1, alt: 1, colspan: 1, height: 1, rowspan: 1, start: 1, title: 1, valign: 1, width: 1 };
+		const HTML_BLOCK_START_RE = /^\s*<(div|p|table|ul|ol|dl|blockquote|pre|figure|details|section|article|picture|center|summary|nav|header|footer|aside|main|h[1-6]|hr|br|img)([\s/>]|$)/i;
+
+		function domNodeToReact(node, key, resolveImage) {
+			if (node.nodeType === 3) {
+				const text = node.nodeValue.replace(/\s+/g, " ");
+				if (text === "" || text === " ") return null;
+				return mdInline(text, key, resolveImage);
+			}
+			if (node.nodeType !== 1) return null;
+			const tag = node.tagName.toLowerCase();
+			if (HTML_DROP_TAGS[tag] === 1) return null;
+			if (HTML_ALLOWED_TAGS[tag] !== 1) return domChildrenToReact(node, key, resolveImage);
+			const props = { key };
+			for (let ai = 0; ai < node.attributes.length; ai++) {
+				const attr = node.attributes[ai];
+				const name = attr.name.toLowerCase();
+				const value = attr.value;
+				if (typeof value !== "string" || value.length > 2000) continue;
+				if (name === "href") {
+					const u = mdSafeUrl(value);
+					if (u !== null) props.href = u;
+				} else if (name === "src") {
+					const u = resolveImage(value);
+					if (u !== null) props.src = u;
+				} else if (HTML_ALLOWED_ATTRS[name] === 1 && value.length <= 200) {
+					props[name] = value;
+				}
+			}
+			if (tag === "a") {
+				if (props.href === undefined) return domChildrenToReact(node, key, resolveImage);
+				props.target = "_blank";
+				props.rel = "noreferrer noopener";
+			}
+			if (tag === "img") {
+				if (props.src === undefined) return null;
+				props.loading = "lazy";
+				return h("img", props);
+			}
+			if (HTML_VOID_TAGS[tag] === 1) return h(tag, props);
+			return h(tag, props, domChildrenToReact(node, key, resolveImage));
+		}
+		function domChildrenToReact(parent, keyBase, resolveImage) {
+			const out = [];
+			for (let ni = 0; ni < parent.childNodes.length; ni++) {
+				const converted = domNodeToReact(parent.childNodes[ni], keyBase + "-" + ni, resolveImage);
+				if (converted !== null) out.push(converted);
+			}
+			return out;
+		}
+		function renderHtmlChunk(html, keyBase, resolveImage) {
+			try {
+				const doc = new DOMParser().parseFromString(html, "text/html");
+				return domChildrenToReact(doc.body, keyBase, resolveImage);
+			} catch (e) {
+				return [html];
+			}
+		}
+
 		function mdInline(text, keyBase, resolveImage) {
 			const patterns = [
 				{ re: /`([^`]+)`/, type: "code" },
@@ -141,6 +206,7 @@ window.__ModuleLoader__.load({
 				{ re: /~~([\s\S]+?)~~/, type: "strike" },
 				{ re: /\*([^*\n]+)\*/, type: "italic" },
 				{ re: /(^|[\s(])_([^_\n]+)_(?=[\s).,!?:;]|$)/, type: "italic2" },
+				{ re: /<\/?[a-zA-Z][a-zA-Z0-9-]*(?:\s[^<>]*)?\s*\/?>/, type: "html" },
 			];
 			const nodes = [];
 			let rest = text;
@@ -158,6 +224,7 @@ window.__ModuleLoader__.load({
 				const m = best.m;
 				if (m.index > 0) nodes.push(rest.slice(0, m.index));
 				const kk = keyBase + "-" + (k++);
+				let extraSkip = 0;
 				if (p.type === "code") {
 					nodes.push(h("code", { key: kk }, m[1]));
 				} else if (p.type === "img") {
@@ -174,11 +241,32 @@ window.__ModuleLoader__.load({
 					nodes.push(h("del", { key: kk }, mdInline(m[1], kk, resolveImage)));
 				} else if (p.type === "italic") {
 					nodes.push(h("em", { key: kk }, mdInline(m[1], kk, resolveImage)));
+				} else if (p.type === "html") {
+					const tagNameMatch = /^<\/?([a-zA-Z][a-zA-Z0-9-]*)/.exec(m[0]);
+					const tagName = tagNameMatch !== null ? tagNameMatch[1].toLowerCase() : "";
+					const isClosing = m[0].charAt(0) === "<" && m[0].charAt(1) === "/";
+					const selfClosing = /\/\s*>$/.test(m[0]) || HTML_VOID_TAGS[tagName] === 1;
+					if (isClosing) {
+						nodes.push(m[0]);
+					} else if (selfClosing) {
+						nodes.push(h(React.Fragment, { key: kk }, renderHtmlChunk(m[0], kk, resolveImage)));
+					} else {
+						const closeRe = new RegExp("</" + tagName + "\\s*>", "i");
+						const after = rest.slice(m.index + m[0].length);
+						const cm = closeRe.exec(after);
+						if (cm !== null) {
+							const chunk = m[0] + after.slice(0, cm.index) + cm[0];
+							nodes.push(h(React.Fragment, { key: kk }, renderHtmlChunk(chunk, kk, resolveImage)));
+							extraSkip = cm.index + cm[0].length;
+						} else {
+							nodes.push(h(React.Fragment, { key: kk }, renderHtmlChunk(m[0], kk, resolveImage)));
+						}
+					}
 				} else {
 					nodes.push(m[1]);
 					nodes.push(h("em", { key: kk }, mdInline(m[2], kk, resolveImage)));
 				}
-				rest = rest.slice(m.index + m[0].length);
+				rest = rest.slice(m.index + m[0].length + extraSkip);
 			}
 			return nodes;
 		}
@@ -275,9 +363,37 @@ window.__ModuleLoader__.load({
 					blocks.push(mdBuildList(items, "ls" + (key++), resolveImage));
 					continue;
 				}
+				if (line.trim().startsWith("<!--")) {
+					while (i < lines.length && lines[i].indexOf("-->") === -1) i++;
+					i++;
+					continue;
+				}
+				if (HTML_BLOCK_START_RE.test(line)) {
+					const rootTagMatch = /^\s*<([a-zA-Z][a-zA-Z0-9-]*)/.exec(line);
+					const rootTag = rootTagMatch !== null ? rootTagMatch[1].toLowerCase() : "";
+					const chunk = [line];
+					i++;
+					if (HTML_VOID_TAGS[rootTag] !== 1 && /\/\s*>$/.test(line.trim()) === false && rootTag !== "") {
+						const openRe = new RegExp("<" + rootTag + "(?=[\\s/>])", "gi");
+						const closeRe = new RegExp("</" + rootTag + "\\s*>", "gi");
+						let depth = 0;
+						for (let ci = 0; ci < chunk.length; ci++) {
+							depth += (chunk[ci].match(openRe) || []).length;
+							depth -= (chunk[ci].match(closeRe) || []).length;
+						}
+						while (i < lines.length && depth > 0 && chunk.length < 400) {
+							chunk.push(lines[i]);
+							depth += (lines[i].match(openRe) || []).length;
+							depth -= (lines[i].match(closeRe) || []).length;
+							i++;
+						}
+					}
+					blocks.push(h("div", { key: "b" + (key++), className: "pm-html" }, renderHtmlChunk(chunk.join("\n"), "html" + key, resolveImage)));
+					continue;
+				}
 				const buf = [line];
 				i++;
-				while (i < lines.length && lines[i].trim() !== "" && !MD_HEADING_RE.test(lines[i]) && !MD_FENCE_RE.test(lines[i]) && !MD_HR_RE.test(lines[i]) && !MD_QUOTE_RE.test(lines[i]) && !MD_LIST_RE.test(lines[i])) {
+				while (i < lines.length && lines[i].trim() !== "" && !MD_HEADING_RE.test(lines[i]) && !MD_FENCE_RE.test(lines[i]) && !MD_HR_RE.test(lines[i]) && !MD_QUOTE_RE.test(lines[i]) && !MD_LIST_RE.test(lines[i]) && !HTML_BLOCK_START_RE.test(lines[i])) {
 					buf.push(lines[i]);
 					i++;
 				}
