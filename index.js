@@ -985,6 +985,59 @@ export function apply(ctx, config) {
     return ''
   }
 
+  /** 安装成功后的校验：确认实际包名、依赖登记、bundle 声明与 bundle 层
+   * 注册状态——把「安装成功但 DSH 不会加载」的情况明确报出来
+   * （如 core-dsh-plugins：仓库带 dsh-plugin topic 但包本身没有
+   * dsh.bundle.patch 声明，只能作为普通依赖存在）。返回日志行。 */
+  async function finishInstall(profile, installSpec) {
+    const notes = []
+    let packageName = ''
+    let pkgManifest = null
+    try {
+      if (installSpec.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(installSpec) || installSpec.startsWith('file:') || installSpec.startsWith('link:')) {
+        const rawPath = installSpec.replace(/^(file|link):/, '')
+        pkgManifest = JSON.parse(await readFile(join(rawPath, 'package.json'), 'utf8'))
+      } else {
+        const nameMatch = /^(@[^@\s/]+\/[^@\s]+|[^@\s./][^@\s]*)/.exec(installSpec)
+        packageName = nameMatch !== null ? nameMatch[1] : ''
+      }
+    } catch { /* 读取失败时保留空名，跳过后续校验 */ }
+    if (pkgManifest !== null && typeof pkgManifest.name === 'string' && pkgManifest.name !== '') packageName = pkgManifest.name
+    if (packageName === '') return notes
+    let inDeps = false
+    let inBundles = false
+    try {
+      const manifest = JSON.parse(await readFile(join(dshHomeDir(), 'profiles', profile, 'package.json'), 'utf8'))
+      const deps = manifest.dependencies !== null && typeof manifest.dependencies === 'object' ? manifest.dependencies : {}
+      inDeps = deps[packageName] !== undefined
+      const dsh = manifest.dsh !== null && typeof manifest.dsh === 'object' ? manifest.dsh : {}
+      const profileCfg = dsh.profile !== null && typeof dsh.profile === 'object' ? dsh.profile : {}
+      inBundles = Array.isArray(profileCfg.bundles) && profileCfg.bundles.indexOf(packageName) !== -1
+    } catch {
+      notes.push('实际包名：' + packageName + '（无法回读 profile manifest 验证登记状态）')
+      return notes
+    }
+    let hasBundle
+    if (pkgManifest !== null) {
+      hasBundle = isBundleManifest(pkgManifest)
+    } else {
+      hasBundle = false
+      try {
+        hasBundle = isBundleManifest(JSON.parse(await readFile(join(dshHomeDir(), 'profiles', profile, 'node_modules', ...packageName.split('/'), 'package.json'), 'utf8')))
+      } catch { /* 已安装 manifest 不可读时按无声明处理 */ }
+    }
+    notes.push('实际包名：' + packageName)
+    if (!inDeps) notes.push('警告：' + packageName + ' 未出现在 profile 依赖中——安装可能未生效')
+    if (!hasBundle) {
+      notes.push('警告：' + packageName + ' 未声明 dsh.bundle.patch——仅作为普通依赖安装，DSH 不会加载它（该仓库不是标准 DSH 插件包，可考虑移除）')
+    } else if (!inBundles) {
+      notes.push('警告：' + packageName + ' 声明了 dsh.bundle 但未登记到 bundle 层——DSH 不会加载它')
+    } else {
+      notes.push('已登记到 bundle 层 ✓ — 重启 DSH 后加载')
+    }
+    return notes
+  }
+
   /** 移除成功后的收尾：验证依赖与 bundle 层确已移除，并清理 plug-manager
    * 下载的本地源码目录（.plug-manager-src/<owner>--<repo>）。返回日志行。 */
   async function finishRemove(profile, packageName, removedSpec) {
@@ -1062,9 +1115,13 @@ export function apply(ctx, config) {
           await runChild(job, env.launcher.cmd, env.launcher.args.concat(args), env.launcher.cwd !== undefined ? env.launcher.cwd : env.dshHome)
           if (job.exitCode === 0) {
             appendOutput(job, '\n[plug-manager] 安装成功 — 重启 DSH 后组合新 bundle 层\n')
+            for (const note of await finishInstall(profile, installSpec)) appendOutput(job, '[plug-manager] ' + note + '\n')
           } else if (job.output.indexOf('ERR_INVALID_THIS') !== -1) {
             await npmFallbackInstall(job, env, installSpec)
-            if (job.status === 'success') appendOutput(job, '\n[plug-manager] 安装成功（npm 兜底）— 重启 DSH 后组合新 bundle 层\n')
+            if (job.status === 'success') {
+              appendOutput(job, '\n[plug-manager] 安装成功（npm 兜底）— 重启 DSH 后组合新 bundle 层\n')
+              for (const note of await finishInstall(profile, installSpec)) appendOutput(job, '[plug-manager] ' + note + '\n')
+            }
           }
         } else if (op === 'remove') {
           // 彻底移除：先记录安装源 → CLI 移除（pnpm remove + bundle 对账）→
