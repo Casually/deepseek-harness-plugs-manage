@@ -765,6 +765,24 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/** 旧版宿主（v0.5.0 之前）的 /plug-mgr/profiles 不返回依赖元数据字段；
+		 * 统一补齐默认值，保证新旧宿主下「已安装」页都能渲染。 */
+		function normalizeDep(dep) {
+			const d = dep !== null && typeof dep === "object" ? dep : {};
+			return {
+				name: typeof d.name === "string" ? d.name : "",
+				spec: typeof d.spec === "string" ? d.spec : "",
+				isBundle: d.isBundle === true,
+				version: typeof d.version === "string" ? d.version : "",
+				description: typeof d.description === "string" ? d.description : "",
+				license: typeof d.license === "string" ? d.license : "",
+				homepage: typeof d.homepage === "string" ? d.homepage : "",
+				repoUrl: typeof d.repoUrl === "string" ? d.repoUrl : "",
+				githubFullName: typeof d.githubFullName === "string" ? d.githubFullName : "",
+				hasPrepare: d.hasPrepare === true,
+			};
+		}
+
 		function InstalledCard(props) {
 			const dep = props.dep;
 			const initial = dep.name.replace(/^@/, "").charAt(0).toUpperCase();
@@ -857,18 +875,19 @@ window.__ModuleLoader__.load({
 					})
 					.catch((e) => setMessage({ ok: false, text: errMsg(e) }));
 			}
-			const selectedDep = selected === null ? null : p.dependencies.find((d) => d.name === selected);
+			const deps = Array.isArray(p.dependencies) ? p.dependencies.map(normalizeDep) : [];
+			const selectedDep = selected === null ? null : deps.find((d) => d.name === selected) ?? null;
 			return h("div", { className: "pm-profile-card" },
 				h("div", { className: "pm-row" },
 					h("strong", null, "Profile：" + p.name),
 					h("span", { className: "pm-spacer" }),
-					p.dependencies.length > 0 ? h("button", { className: "pm-btn", onClick: () => requestOp("update", "") }, "全部更新") : null,
+					deps.length > 0 ? h("button", { className: "pm-btn", onClick: () => requestOp("update", "") }, "全部更新") : null,
 				),
 				h("div", { className: "pm-muted" }, "Bundle 栈：" + (p.bundles.length > 0 ? p.bundles.join(" → ") : "（空）")),
 				job !== null && job.dep === "" ? h(JobPanel, { jobId: job.id, onSettled: (ok) => { if (ok && props.onRequested) props.onRequested(); } }) : null,
-				p.dependencies.length === 0 ? h("div", { className: "pm-muted" }, "此 profile 尚未安装外部插件。") : null,
+				deps.length === 0 ? h("div", { className: "pm-muted" }, "此 profile 尚未安装外部插件。") : null,
 				h("div", { className: "pm-cards" },
-					p.dependencies.map((dep) => h(InstalledCard, {
+					deps.map((dep) => h(InstalledCard, {
 						key: dep.name,
 						dep,
 						onOpen: setSelected,
