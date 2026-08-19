@@ -9,9 +9,11 @@
 
 - **设置 → 插件 → 插件市场**（Web UI）
   - **发现**：搜索带 `dsh-plugin` 标签的 GitHub 仓库（最佳匹配 / 最多 Star /
-    最近更新），打开仓库查看 Star、topics、许可证、README（内置安全的
-    Markdown 渲染：标题 / 代码块 / 表格 / 列表 / 链接 / 图片，相对图片
-    自动改写为 raw.githubusercontent.com 地址），以及关键信息——
+    最近更新），打开仓库查看 Star、topics、许可证、README（内置安全渲染：
+    Markdown 标题 / 代码块 / 表格 / 列表 / 链接 / 图片，外加白名单净化的
+    HTML 标签——`<div align>` 徽章墙、`<img>`、`<sup>`、`<details>` 等；
+    script / iframe / 事件属性 / `javascript:` URL 一律剥离；相对图片自动
+    改写为 raw.githubusercontent.com 地址），以及关键信息——
     其 `package.json` 是否声明了 `dsh.bundle`（可激活的 bundle 层）、是否含
     `prepare` 脚本（git 安装会从源码构建）。
   - **一键安装**：点击「申请安装」后由插件管理器**直接执行**
@@ -20,10 +22,11 @@
     可随时取消。「已安装」页的更新 / 移除同样直接执行。
   - **详情弹窗**：仓库详情以**模态弹窗**展示（点击卡片立即弹出，带入场
     动效；Esc / 点击遮罩 / 关闭按钮均可关闭），无需滚动到页面顶部；
-    README 在弹窗内直接滚动阅读。
+    README 在弹窗内独立滚动阅读，头部、徽章与安装区保持固定。
   - **一键重启**：安装 / 更新 / 移除成功后，任务面板提供「重启 DSH 并刷新
-    页面」按钮——宿主按当前启动方式拉起替代进程后退出，页面轮询等待服务
-    恢复并自动刷新（含确认对话框与超时兜底提示）。
+    页面」按钮——自定义确认弹窗（不使用浏览器原生对话框）确认后，宿主按
+    当前启动方式拉起替代进程后退出，页面轮询等待服务恢复并自动刷新
+    （含超时兜底提示）。
   - **安装源智能解析**：`github:owner/repo` 源会先查证该仓库同名包是否已
     发布到 npm 注册表——若已发布则自动改用 npm 包安装（npm 包自带预构建
     产物）；未发布则**经 HTTPS 从 codeload.github.com 下载源码 tarball**
@@ -33,6 +36,14 @@
     内执行 `npm install`（目录依赖按真实路径解析裸导入，依赖必须装在源码
     目录里），避免「装完一重启就 ERR_MODULE_NOT_FOUND」；依赖安装失败时
     直接中止，不把坏组合装入 profile。
+  - **安装后校验**：安装成功后回读并输出实际包名（源码安装的包名常与
+    仓库名不同）、依赖登记与 bundle 层注册状态；若包未声明
+    `dsh.bundle.patch` 会明确警告「DSH 不会加载它，可考虑移除」，杜绝
+    「装成功但悄悄不生效」。
+  - **彻底移除**：移除 = 删除本地插件相关文件且系统不再加载。除 pnpm
+    卸载依赖、CLI 自动对账清理 bundle 层外，还会回读验证移除结果（残留
+    即警告），并同步删除插件管理器下载的本地源码目录
+    （`.plug-manager-src/<owner>--<repo>`）。
   - **pnpm 兼容兜底**：pnpm 7 在较新 Node 上抓取注册表会报
     `ERR_INVALID_THIS`；检测到此错误时自动改用 npm 完成安装，并手动登记
     bundle 层（复刻 dsh CLI 的 reconcile 逻辑）。
@@ -40,9 +51,11 @@
     （见下文「代理配置」）。
   - **已安装**：列出 `$DSH_HOME/profiles` 下每个 profile 的 bundle 栈与已安装
     依赖，以与「发现」一致的卡片样式展示（版本 / 许可证 / 安装源 / bundle 层
-    徽章）。点卡片打开详情弹窗：除本地信息外，若插件关联 GitHub 仓库，还会
-    展示仓库星标 / topics / README；卡片与弹窗均可一键「GitHub ↗」直达仓库，
-    并提供「更新 / 移除」操作。
+    徽章），支持**按名称 / 安装源 / 描述搜索**。点卡片打开详情弹窗：除本地
+    信息外，若插件关联 GitHub 仓库，还会展示仓库星标 / topics / README；
+    卡片与弹窗均可一键「GitHub ↗」直达仓库，并提供「更新 / 移除」操作。
+  - **插件社区**：标签栏右侧「插件社区 ↗」按钮，新窗口打开社区站点
+    <https://casually.github.io/dsh-plug-hub/>。
 - **Agent 工具**（模型侧入口，执行前按沙箱策略征询审批）
   - `plug_install` — `dsh plugin --profile <name> add <spec>`
     （npm 包名、`github:owner/repo[#ref]`、`git+<url>`、`.tgz` URL 或路径）
@@ -51,8 +64,9 @@
 - **本地 JSON API**（仅回环地址，由运行中的 web 服务器提供）：
   `/plug-mgr/search`、`/plug-mgr/repo`、`/plug-mgr/profiles`、
   `/plug-mgr/request`（启动安装 / 更新 / 移除任务）、
-  `/plug-mgr/job`（查询 / 取消任务）、`/plug-mgr/proxy`、
-  `/plug-mgr/proxy-test`。
+  `/plug-mgr/job`（查询 / 取消任务）、`/plug-mgr/restart`（重启 DSH
+  服务，页面自动等待恢复并刷新）、`/plug-mgr/pending`（agent 工具待审批
+  队列）、`/plug-mgr/proxy`、`/plug-mgr/proxy-test`。
 
 ## 代理配置
 
@@ -110,18 +124,21 @@ UI 的「测试连接」会请求 `api.github.com/zen` 验证当前生效通道�
 ## 安装
 
 要求 PATH 中有 `pnpm`（`dsh plugin` 命令会转发给它）；使用代理功能还要求
-宿主有 `curl`（macOS / 主流 Linux 自带）。
+宿主有 `curl`（macOS / 主流 Linux 自带）。profile 本身是 pnpm workspace
+根目录，`add` 必须带 `-w`。
 
 ```sh
-# 在本目录的父目录下执行（profile 本身是 pnpm workspace 根目录，
-# pnpm 7 拒绝不带 -w 的根目录 add，所以必须带 -w）
-dsh plugin --profile web add -w ./dsh-plug-manager
-
-# 发布 / 推送并打上 dsh-plugin topic 之后：
-dsh plugin --profile web add -w github:OWNER/dsh-plug-manager
-
-# 发布到 npm 之后：
+# npm 安装（推荐：预构建产物，版本齐全）
 dsh plugin --profile web add -w dsh-plug-manager
+
+# 锁定版本
+dsh plugin --profile web add -w dsh-plug-manager@0.6.3
+
+# GitHub 源码（最新 main；也可 #vX.Y.Z 锁 tag）
+dsh plugin --profile web add -w github:Casually/deepseek-harness-plugs-manage
+
+# 本地目录（开发自用，在本目录的父目录下执行）
+dsh plugin --profile web add -w ./dsh-plug-manager
 ```
 
 然后**重启 DSH**（`dsh web`）以组合新 bundle。「插件市场」标签页会出现在
