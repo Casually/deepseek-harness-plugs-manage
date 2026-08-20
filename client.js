@@ -199,6 +199,7 @@ window.__ModuleLoader__.load({
 		function mdInline(text, keyBase, resolveImage) {
 			const patterns = [
 				{ re: /`([^`]+)`/, type: "code" },
+				{ re: /\[!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/, type: "imglink" },
 				{ re: /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/, type: "img" },
 				{ re: /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/, type: "link" },
 				{ re: /\*\*([\s\S]+?)\*\*/, type: "bold" },
@@ -227,6 +228,16 @@ window.__ModuleLoader__.load({
 				let extraSkip = 0;
 				if (p.type === "code") {
 					nodes.push(h("code", { key: kk }, m[1]));
+				} else if (p.type === "imglink") {
+					const imgSrc = resolveImage(m[2]);
+					const href = mdSafeUrl(m[3]);
+					if (imgSrc !== null && href !== null) {
+						nodes.push(h("a", { key: kk, href, target: "_blank", rel: "noreferrer noopener" }, h("img", { src: imgSrc, alt: m[1], loading: "lazy" })));
+					} else if (imgSrc !== null) {
+						nodes.push(h("img", { key: kk, src: imgSrc, alt: m[1], loading: "lazy" }));
+					} else {
+						nodes.push(m[1] !== "" ? m[1] : m[0]);
+					}
 				} else if (p.type === "img") {
 					const src = resolveImage(m[2]);
 					if (src !== null) nodes.push(h("img", { key: kk, src, alt: m[1], loading: "lazy" }));
