@@ -556,29 +556,75 @@ export function apply(ctx, config) {
   }
 
   /** 探测 DSH 主目录、dsh CLI 入口、pnpm/node（只读）。 */
+  /** 纯 Node 的 PATH 探测（不执行任何命令）。 */
+  function findInPath(binary) {
+    const pathEnv = typeof process.env.PATH === 'string' ? process.env.PATH : ''
+    const sep = process.platform === 'win32' ? ';' : ':'
+    for (const dir of pathEnv.split(sep)) {
+      if (dir === '') continue
+      const candidates = process.platform === 'win32'
+        ? [join(dir, binary + '.cmd'), join(dir, binary + '.exe'), join(dir, binary)]
+        : [join(dir, binary)]
+      for (const candidate of candidates) {
+        try {
+          if (existsSync(candidate)) return candidate
+        } catch { /* 个别目录不可读时跳过继续找 */ }
+      }
+    }
+    return null
+  }
+
+  /** 不走 shell 服务的环境探测：沙箱后端缺失（如未安装 bubblewrap 的 Linux
+   * 服务部署）时 shell 会拒绝执行探测命令，此处退化为只读的文件系统探测，
+   * 保证插件市场页面可用。 */
+  function discoverEnvViaNode() {
+    const env = { dshHome: '', cli: { kind: 'missing', value: '' }, pnpm: '', node: '' }
+    env.dshHome = process.env.DSH_HOME !== undefined && process.env.DSH_HOME !== '' ? process.env.DSH_HOME : join(homedir(), '.dsh')
+    const cliBin = findInPath('dsh')
+    if (cliBin !== null) {
+      env.cli = { kind: 'bin', value: cliBin }
+    } else {
+      for (const d of [process.env.INIT_CWD, process.env.PNPM_SCRIPT_SRC_DIR]) {
+        if (typeof d === 'string' && d !== '' && existsSync(join(d, 'apps/cli/lib/bin.js'))) {
+          env.cli = { kind: 'src', value: d }
+          break
+        }
+      }
+    }
+    const pnpmBin = findInPath('pnpm')
+    if (pnpmBin !== null) env.pnpm = pnpmBin
+    const nodeBin = findInPath('node')
+    env.node = nodeBin !== null ? nodeBin : process.execPath
+    return env
+  }
+
   function discoverEnv() {
     if (envPromise !== undefined) return envPromise
     envPromise = (async () => {
       const shell = ctx.get('shell')
-      if (shell === undefined) throw new Error('shell 服务不可用')
-      const command = [
-        'printf "DSH_HOME_DIR:%s\\n" "${DSH_HOME:-$HOME/.dsh}"',
-        'if command -v dsh >/dev/null 2>&1; then printf "CLI_BIN:%s\\n" "$(command -v dsh)"; else for d in "${INIT_CWD:-}" "${PNPM_SCRIPT_SRC_DIR:-}"; do if [ -n "$d" ] && [ -f "$d/apps/cli/lib/bin.js" ]; then printf "CLI_SRC:%s\\n" "$d"; break; fi; done; fi',
-        'if command -v pnpm >/dev/null 2>&1; then printf "PNPM:%s\\n" "$(command -v pnpm)"; fi',
-        'if command -v node >/dev/null 2>&1; then printf "NODE:%s\\n" "$(command -v node)"; fi',
-      ].join('\n')
-      const result = await shell.run(shell.resolve({ command, timeoutMs: 15000, stdoutMaxBytes: 8192 }))
-      const text = result.stdout !== undefined ? result.stdout.text : ''
-      const env = { dshHome: '', cli: { kind: 'missing', value: '' }, pnpm: '', node: '' }
-      for (const line of text.split('\n')) {
-        if (line.startsWith('DSH_HOME_DIR:')) env.dshHome = line.slice(13).trim()
-        else if (line.startsWith('CLI_BIN:')) env.cli = { kind: 'bin', value: line.slice(8).trim() }
-        else if (line.startsWith('CLI_SRC:')) env.cli = { kind: 'src', value: line.slice(8).trim() }
-        else if (line.startsWith('PNPM:')) env.pnpm = line.slice(5).trim()
-        else if (line.startsWith('NODE:')) env.node = line.slice(5).trim()
+      if (shell !== undefined) {
+        try {
+          const command = [
+            'printf "DSH_HOME_DIR:%s\\n" "${DSH_HOME:-$HOME/.dsh}"',
+            'if command -v dsh >/dev/null 2>&1; then printf "CLI_BIN:%s\\n" "$(command -v dsh)"; else for d in "${INIT_CWD:-}" "${PNPM_SCRIPT_SRC_DIR:-}"; do if [ -n "$d" ] && [ -f "$d/apps/cli/lib/bin.js" ]; then printf "CLI_SRC:%s\\n" "$d"; break; fi; done; fi',
+            'if command -v pnpm >/dev/null 2>&1; then printf "PNPM:%s\\n" "$(command -v pnpm)"; fi',
+            'if command -v node >/dev/null 2>&1; then printf "NODE:%s\\n" "$(command -v node)"; fi',
+          ].join('\n')
+          const result = await shell.run(shell.resolve({ command, timeoutMs: 15000, stdoutMaxBytes: 8192 }))
+          const text = result.stdout !== undefined ? result.stdout.text : ''
+          const env = { dshHome: '', cli: { kind: 'missing', value: '' }, pnpm: '', node: '' }
+          for (const line of text.split('\n')) {
+            if (line.startsWith('DSH_HOME_DIR:')) env.dshHome = line.slice(13).trim()
+            else if (line.startsWith('CLI_BIN:')) env.cli = { kind: 'bin', value: line.slice(8).trim() }
+            else if (line.startsWith('CLI_SRC:')) env.cli = { kind: 'src', value: line.slice(8).trim() }
+            else if (line.startsWith('PNPM:')) env.pnpm = line.slice(5).trim()
+            else if (line.startsWith('NODE:')) env.node = line.slice(5).trim()
+          }
+          if (env.dshHome === '') throw new Error('无法从环境确定 DSH_HOME')
+          return env
+        } catch { /* shell 探测失败（如 SANDBOX_UNAVAILABLE）→ 纯 Node 兜底 */ }
       }
-      if (env.dshHome === '') throw new Error('无法从环境确定 DSH_HOME')
-      return env
+      return discoverEnvViaNode()
     })()
     envPromise.catch(() => { envPromise = undefined })
     return envPromise
