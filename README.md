@@ -132,7 +132,7 @@ UI 的「测试连接」会请求 `api.github.com/zen` 验证当前生效通道�
 dsh plugin --profile web add -w dsh-plug-manager
 
 # 锁定版本
-dsh plugin --profile web add -w dsh-plug-manager@0.6.3
+dsh plugin --profile web add -w dsh-plug-manager@0.6.6
 
 # GitHub 源码（最新 main；也可 #vX.Y.Z 锁 tag）
 dsh plugin --profile web add -w github:Casually/deepseek-harness-plugs-manage
@@ -141,8 +141,41 @@ dsh plugin --profile web add -w github:Casually/deepseek-harness-plugs-manage
 dsh plugin --profile web add -w ./dsh-plug-manager
 ```
 
-然后**重启 DSH**（`dsh web`）以组合新 bundle。「插件市场」标签页会出现在
-设置 → 插件 下；`plug_*` 工具对该 profile 的所有 agent 可用。
+经 `dsh plugin` 命令安装后**重启 DSH**（`dsh web`）以组合新 bundle。
+
+### 手动安装（不经 dsh CLI）
+
+```sh
+# 1. 进入 DSH 插件目录（web profile 目录）
+cd ${DSH_HOME:-~/.dsh}/profiles/web
+
+# 2. 安装社区插件发现管理插件
+#    （较老的 pnpm 拒绝向 workspace 根目录直接 add 时，改用 pnpm add -w dsh-plug-manager）
+pnpm add dsh-plug-manager
+```
+
+3. 在 `package.json` 的 `dsh.profile.bundles` 字段中添加 `"dsh-plug-manager"`
+   （bundle 层栈决定加载顺序；经 `dsh plugin` 命令安装会自动登记，手动安装
+   需自行添加）：
+
+   ```json
+   {
+     "dsh": {
+       "profile": {
+         "bundles": [
+           "@deepseek-ai/dsh-base",
+           "@deepseek-ai/dsh-web-app",
+           "dsh-plug-manager"
+         ]
+       }
+     }
+   }
+   ```
+
+4. **重启 DSH 服务**使其生效。
+
+安装完成后，「插件市场」标签页会出现在设置 → 插件 下；`plug_*` 工具对该
+profile 的所有 agent 可用。
 
 ## 卸载
 
